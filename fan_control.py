@@ -3,6 +3,7 @@
 GPU 팬 제어 시스템
 - 조건에 따라 팬 제어
 - 온도+팬속도 모니터링 + 팬 속도 조건 이유 출력
+- 컨테이너 종료 시 안전 종료 (팬 100% → 자동 제어)
 """
 
 import os
@@ -12,6 +13,8 @@ import yaml
 import argparse
 import logging
 import subprocess
+import signal
+import atexit
 from typing import Dict, Tuple, List
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,8 +61,105 @@ class GPUFanController:
         self.power_thresholds = self.config['fan_control']['power_thresholds']
         self.control_config = self.config['fan_control']['control']
         
+        # 종료 플래그
+        self._shutdown_requested = False
+        
+        # 종료 핸들러 설정
+        self._setup_shutdown_handlers()
+        
         self.logger.info("GPU 팬 컨트롤러 초기화 완료")
         self.logger.info(f"팬 설정: {self.fans}")
+
+    def _setup_shutdown_handlers(self):
+        """종료 시그널 핸들러 설정"""
+        # SIGTERM, SIGINT 핸들러 설정 (Docker stop, Ctrl+C)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+        
+        # atexit으로 백업 종료 핸들러 등록
+        atexit.register(self._emergency_shutdown)
+
+    def _signal_handler(self, signum, frame):
+        """시그널 핸들러"""
+        self.logger.info(f"🛑 종료 신호 수신됨 (signal: {signum})")
+        self._shutdown_requested = True
+        self._graceful_shutdown()
+        sys.exit(0)
+
+    def _emergency_shutdown(self):
+        """비상 종료 핸들러 (atexit)"""
+        if not self._shutdown_requested:
+            try:
+                self.logger.info("🚨 비상 종료 핸들러 실행")
+                self._graceful_shutdown()
+            except:
+                pass  # 종료 중에는 예외를 무시
+
+    def _graceful_shutdown(self):
+        """안전한 종료 절차"""
+        try:
+            self.logger.info("🔄 안전 종료 절차 시작...")
+            
+            # 1단계: 모든 팬을 100%로 설정
+            self.logger.info("1단계: 모든 팬을 100%로 설정")
+            self._set_all_fans_max()
+            time.sleep(3)  # 팬이 최대 속도로 돌 시간 확보
+            
+            # 2단계: 팬을 자동 제어 모드로 복원
+            self.logger.info("2단계: 팬을 자동 제어 모드로 복원")
+            self._restore_fan_auto_control()
+            
+            self.logger.info("✅ 안전 종료 완료")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 안전 종료 중 오류 발생: {e}")
+            # 오류 발생시라도 팬을 자동 모드로 복원 시도
+            try:
+                self._restore_fan_auto_control()
+            except:
+                pass
+
+    def _set_all_fans_max(self):
+        """모든 팬을 100%로 설정"""
+        max_pwm = self.control_config['pwm_max']
+        
+        for fan_name, fan_path in self.fans.items():
+            try:
+                # PWM 활성화 (수동 모드)
+                enable_path = fan_path.replace('pwm', 'pwm') + '_enable'
+                if os.path.exists(enable_path):
+                    with open(enable_path, 'w') as f:
+                        f.write('1')
+                
+                # 100% 속도 설정
+                with open(fan_path, 'w') as f:
+                    f.write(str(max_pwm))
+                
+                self.logger.info(f"  {fan_name}: 100% (PWM: {max_pwm})")
+                
+            except Exception as e:
+                self.logger.error(f"팬 {fan_name} 최대 속도 설정 실패: {e}")
+
+    def _restore_fan_auto_control(self):
+        """팬을 자동 제어 모드로 복원"""
+        for fan_name, fan_path in self.fans.items():
+            try:
+                # PWM enable 파일 경로 생성
+                enable_path = fan_path.replace('pwm', 'pwm') + '_enable'
+                
+                if os.path.exists(enable_path):
+                    # 자동 제어 모드로 설정 (값: 2 또는 0)
+                    # 2 = automatic fan control
+                    # 0 = no fan control (시스템 기본값)
+                    with open(enable_path, 'w') as f:
+                        f.write('2')
+                    
+                    self.logger.info(f"  {fan_name}: 자동 제어 모드로 복원")
+                else:
+                    self.logger.warning(f"  {fan_name}: enable 파일 없음 ({enable_path})")
+                    
+            except Exception as e:
+                self.logger.error(f"팬 {fan_name} 자동 제어 복원 실패: {e}")
 
     def _load_config(self, config_path: str) -> dict:
         """설정 파일 로드"""
@@ -228,6 +328,15 @@ class GPUFanController:
             reason=gpu2_reason
         ))
         
+        # 4. VRM 팬 제어 로직
+        vrm_fan_speed, vrm_reason = self._calculate_vrm_fan_speed(status)
+        reasons.append(FanControlReason(
+            fan_name="vrm",
+            speed_percent=vrm_fan_speed,
+            pwm_value=self._percent_to_pwm(vrm_fan_speed),
+            reason=vrm_reason
+        ))
+        
         return reasons
 
     def _calculate_cpu_fan_speed(self, status: SystemStatus) -> Tuple[int, str]:
@@ -279,6 +388,33 @@ class GPUFanController:
             speed = (gpu_temp - min_temp) * 100 / (max_temp - min_temp)
             return int(speed), f"{gpu_name} 온도 기반 선형 제어 ({gpu_temp}°C, {min_temp}-{max_temp}°C 구간)"
 
+    def _calculate_vrm_fan_speed(self, status: SystemStatus) -> Tuple[int, str]:
+        """VRM 팬 속도 계산"""
+        cpu_temp = status.cpu_temp
+        gpu1_temp = status.gpu1_temp
+        gpu2_temp = status.gpu2_temp
+        gpu1_power = status.gpu1_power
+        gpu2_power = status.gpu2_power
+        
+        vrm_config = self.temp_thresholds['vrm']
+        
+        # GPU 전력이 80W 이상이면 VRM 팬 최대
+        if gpu1_power >= self.power_thresholds['vrm_activation_power'] or \
+           gpu2_power >= self.power_thresholds['vrm_activation_power']:
+            return 100, f"GPU 전력 임계점 초과 (GPU1: {gpu1_power:.1f}W, GPU2: {gpu2_power:.1f}W >= {self.power_thresholds['vrm_activation_power']}W)"
+        
+        # CPU 온도가 50도 이상이면 VRM 팬 최대
+        if cpu_temp >= vrm_config['cpu_temp_threshold']:
+            return 100, f"CPU 온도 임계점 초과 ({cpu_temp}°C >= {vrm_config['cpu_temp_threshold']}°C)"
+        
+        # GPU 온도가 50도 이상이면 VRM 팬 최대
+        if gpu1_temp >= vrm_config['gpu_temp_threshold'] or \
+           gpu2_temp >= vrm_config['gpu_temp_threshold']:
+            return 100, f"GPU 온도 임계점 초과 (GPU1: {gpu1_temp}°C, GPU2: {gpu2_temp}°C >= {vrm_config['gpu_temp_threshold']}°C)"
+        
+        # 기본 속도 유지
+        return vrm_config['default_speed'], f"기본 VRM 팬 속도 유지 (CPU: {cpu_temp}°C, GPU1: {gpu1_temp}°C, GPU2: {gpu2_temp}°C - 모든 임계점 미만)"
+
     def _percent_to_pwm(self, percent: int) -> int:
         """퍼센트를 PWM 값으로 변환"""
         return int(percent * self.control_config['pwm_max'] / 100)
@@ -317,7 +453,7 @@ class GPUFanController:
         self.logger.info("모니터링 모드 시작")
         
         try:
-            while True:
+            while not self._shutdown_requested:
                 status = self.get_system_status()
                 reasons = self.calculate_fan_speeds(status)
                 
@@ -336,20 +472,27 @@ class GPUFanController:
                 
                 print("\n🎯 권장 팬 속도:")
                 for reason in reasons:
-                    print(f"  {reason.fan_name}: {reason.speed_percent}% (PWM: {reason.pwm_value})")
+                    emoji = "🌀" if reason.fan_name in ["gpu1", "gpu2"] else "💨" if reason.fan_name == "cpu" else "⚡"
+                    print(f"  {emoji} {reason.fan_name}: {reason.speed_percent}% (PWM: {reason.pwm_value})")
                     print(f"    이유: {reason.reason}")
                 
-                time.sleep(self.control_config['update_interval'])
+                # 인터럽트 가능한 sleep
+                for _ in range(self.control_config['update_interval']):
+                    if self._shutdown_requested:
+                        break
+                    time.sleep(1)
                 
         except KeyboardInterrupt:
             print("\n모니터링 중단됨")
+            self._shutdown_requested = True
+            self._graceful_shutdown()
 
     def control_mode(self):
         """제어 모드 실행"""
         self.logger.info("제어 모드 시작")
         
         try:
-            while True:
+            while not self._shutdown_requested:
                 status = self.get_system_status()
                 reasons = self.calculate_fan_speeds(status)
                 
@@ -361,10 +504,16 @@ class GPUFanController:
                 else:
                     self.logger.error("일부 팬 제어 실패")
                 
-                time.sleep(self.control_config['update_interval'])
+                # 인터럽트 가능한 sleep
+                for _ in range(self.control_config['update_interval']):
+                    if self._shutdown_requested:
+                        break
+                    time.sleep(1)
                 
         except KeyboardInterrupt:
             self.logger.info("제어 중단됨")
+            self._shutdown_requested = True
+            self._graceful_shutdown()
 
 
 def main():

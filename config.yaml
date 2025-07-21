@@ -18,10 +18,16 @@ fan_control:
       critical_temp: 60  # GPU 60도 이상 시 모든 팬 최대
       min_temp: 40       # GPU 40도 시 해당 GPU 팬 0%
       max_temp: 60       # GPU 60도 시 해당 GPU 팬 100%
+    
+    vrm:
+      cpu_temp_threshold: 50    # CPU 50도 이상 시 VRM 팬 100%
+      gpu_temp_threshold: 50    # GPU 50도 이상 시 VRM 팬 100%
+      default_speed: 50         # 기본 VRM 팬 속도 (%)
   
   # 전력 임계점 설정
   power_thresholds:
     gpu_critical_power: 100  # GPU 100W 이상 시 CPU 팬 최대
+    vrm_activation_power: 80  # GPU 80W 이상 시 VRM 팬 100%
   
   # 제어 설정
   control:
