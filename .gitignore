@@ -1,0 +1,9 @@
+# 로그 파일이 여기에 생성됩니다
+logs/
+*.log
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+.env

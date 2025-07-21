@@ -1,0 +1,30 @@
+# GPU 팬 제어 시스템 설정
+fan_control:
+  # 팬 경로 설정
+  fans:
+    gpu1: "/sys/class/hwmon/hwmon5/pwm7"      # 첫번째 GPU
+    gpu2: "/sys/class/hwmon/hwmon5/pwm1"      # 두번째 GPU
+    cpu: "/sys/class/hwmon/hwmon5/pwm2"       # CPU 수랭 쿨러 라디에이터 팬
+    vrm: "/sys/class/hwmon/hwmon5/pwm6"       # 마더보드 VRM,칩셋 액티브 쿨링 통합 팬
+  
+  # 온도 임계점 설정
+  temperature_thresholds:
+    cpu:
+      max_temp: 60    # CPU 온도 60도 이상 시 팬 100%
+      min_temp: 40    # CPU 온도 40도 시 팬 50%
+      min_speed: 50   # 최소 팬 속도 (%)
+    
+    gpu:
+      critical_temp: 60  # GPU 60도 이상 시 모든 팬 최대
+      min_temp: 40       # GPU 40도 시 해당 GPU 팬 0%
+      max_temp: 60       # GPU 60도 시 해당 GPU 팬 100%
+  
+  # 전력 임계점 설정
+  power_thresholds:
+    gpu_critical_power: 100  # GPU 100W 이상 시 CPU 팬 최대
+  
+  # 제어 설정
+  control:
+    update_interval: 5  # 업데이트 주기 (초)
+    pwm_max: 255       # PWM 최대값
+    log_level: "INFO"  # 로그 레벨 (DEBUG, INFO, WARNING, ERROR)

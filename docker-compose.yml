@@ -1,0 +1,16 @@
+services:
+  gpu-fan-control:
+    build: .
+    container_name: gpu-fan-control
+    restart: unless-stopped
+    privileged: true  # hwmon 접근을 위해 필요
+    volumes:
+      - /sys/class/hwmon:/sys/class/hwmon  # hwmon 디렉토리 마운트
+      - /dev:/dev  # 장치 파일 접근
+      - ./config.yaml:/app/config.yaml:ro  # 설정 파일
+      - ./logs:/app/logs  # 로그 디렉토리
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility,compute
+    runtime: nvidia  # NVIDIA GPU 지원
+    command: python3 fan_control.py --mode control  # 기본은 제어 모드
