@@ -31,6 +31,22 @@ fan_control:
   
   # 제어 설정
   control:
-    update_interval: 5  # 업데이트 주기 (초)
+    update_interval: 1  # 업데이트 주기 (초)
     pwm_max: 255       # PWM 최대값
-    log_level: "INFO"  # 로그 레벨 (DEBUG, INFO, WARNING, ERROR)
+    log_level: "DEBUG"  # 로그 레벨 (DEBUG, INFO, WARNING, ERROR) - 스무딩 디버깅용
+    
+    # 팬 속도 스무딩 설정
+    smoothing:
+      enabled: true          # 스무딩 활성화
+      
+      # CPU 팬
+      cpu_max_change_up: 100   # CPU 팬 상승 시 최대 변화량 (% per second)
+      cpu_max_change_down: 10 # CPU 팬 하강 시 최대 변화량 (% per second)
+      
+      # GPU 팬
+      gpu_max_change_up: 10    # GPU 팬 상승 시 최대 변화량 (% per second)
+      gpu_max_change_down: 5   # GPU 팬 하강 시 최대 변화량 (% per second)
+      
+      # VRM 팬
+      vrm_max_change_up: 5    # VRM 팬 상승 시 최대 변화량 (% per second)
+      vrm_max_change_down: 5   # VRM 팬 하강 시 최대 변화량 (% per second)
